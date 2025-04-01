@@ -35,8 +35,6 @@ The API service provides endpoints for task scheduling and feedback collection, 
    - Collects user feedback to improve future scheduling
    - Includes mood, energy level, and task-specific feedback
 
-3. **`/predict_duration`** (POST)
-   - Predicts task duration based on task type and user history
 
 #### Data Models
 
@@ -170,7 +168,6 @@ For example:
 
 - Scheduling is done for a single day at a time
 - No multi-user optimization (each user's schedule is optimized independently)
-- Simplified model for predicting task duration based only on task type
 
 ## Future Enhancements
 

@@ -91,14 +91,14 @@ async def optimize_schedule(request: ScheduleRequest):
         scheduler = TaskScheduler(ml_params=ml_params)
         
         # Convert Pydantic models to dictionaries
-        tasks_as_dicts = [task.dict() for task in request.tasks]
-        events_as_dicts = [event.dict() for event in request.calendar_events]
+        tasks_as_dicts = [task.model_dump() for task in request.tasks]
+        events_as_dicts = [event.model_dump() for event in request.calendar_events]
         
         # Call the scheduler with dictionaries
         result = scheduler.schedule_tasks(
             tasks=tasks_as_dicts,
             calendar_events=events_as_dicts,
-            constraints=request.constraints.dict()
+            constraints=request.constraints.model_dump()
         )
         
         if result['status'] == 'error':
@@ -143,25 +143,6 @@ async def record_feedback(request: FeedbackRequest):
             status_code=500,
             detail=f"Failed to record feedback: {str(e)}"
         )
-
-@app.post("/predict_duration")
-async def predict_duration(task_data: Dict[str, Any], user_id: str = Body(...)):
-    """
-    Predict task duration using ML model.
-    This is a placeholder - in a full implementation, you'd
-    use a separate ML model trained on historical task completion data.
-    """
-    # Very simple baseline prediction based on task type
-    task_type = task_data.get("type", "").lower()
-    
-    if "meeting" in task_type:
-        return {"predicted_duration": 60}  # 60 minutes for meetings
-    elif "email" in task_type:
-        return {"predicted_duration": 15}  # 15 minutes for emails
-    elif "report" in task_type:
-        return {"predicted_duration": 120}  # 2 hours for reports
-    else:
-        return {"predicted_duration": 30}  # Default 30 minutes
 
 if __name__ == "__main__":
     import uvicorn
