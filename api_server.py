@@ -22,7 +22,8 @@ app.add_middleware(
 )
 
 # Initialize ML constraint learner
-ml_learner = MLConstraintLearner(data_dir="./user_data")
+data_dir = os.environ.get("DATA_DIR", "./user_data")
+ml_learner = MLConstraintLearner(data_dir=data_dir)
 
 # Pydantic models for request/response validation
 class TaskBase(BaseModel):
@@ -146,7 +147,8 @@ if __name__ == "__main__":
     import uvicorn
     
     # Create data directory if it doesn't exist
-    os.makedirs("./user_data", exist_ok=True)
+    data_dir = os.environ.get("DATA_DIR", "./user_data")
+    os.makedirs(data_dir, exist_ok=True)
     
     # Run the server
     uvicorn.run(app, host="0.0.0.0", port=8000)
