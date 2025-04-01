@@ -54,11 +54,9 @@ class MLConstraintLearner:
                 - calendar_events: (optional) List of user events used in scheduling
                 - constraints: includes work_hours and possibly max_continuous_work
             feedback_data: Dictionary with user feedback including:
-                - mood_score: Overall mood rating (1-5)
-                - energy_level: Energy level rating (1-5)
+                - mood_score: Overall mood rating (1-5)    
                 - adjusted_tasks: Tasks the user moved or adjusted
                 - completed_tasks: Tasks the user completed
-                - task_specific_feedback: Any notes on specific tasks
         """
         # Extract features from the schedule
         features = self._extract_schedule_features(schedule_data)
@@ -71,7 +69,6 @@ class MLConstraintLearner:
         
         targets = {
             'mood_score': mood_score,
-            'energy_level': feedback_data.get('energy_level', 3),
             'task_adjustments': len(feedback_data.get('adjusted_tasks', [])),
             'completion_rate': len(feedback_data.get('completed_tasks', [])) / tasks_scheduled_count
         }

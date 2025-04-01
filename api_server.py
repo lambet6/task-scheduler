@@ -71,10 +71,8 @@ class ScheduleResponse(BaseModel):
 
 class FeedbackItem(BaseModel):
     mood_score: int = Field(..., ge=1, le=5)  # 1-5 scale
-    energy_level: int = Field(..., ge=1, le=5)  # 1-5 scale
     adjusted_tasks: List[Dict[str, Any]] = []
     completed_tasks: List[Union[str, int]] = []
-    task_specific_feedback: Optional[Dict[str, str]] = None
 
 class FeedbackRequest(BaseModel):
     user_id: str
