@@ -73,14 +73,14 @@ class MLConstraintLearner:
         features = self._extract_schedule_features(schedule_data)
         
         # Extract target values from feedback
-        # Accessing as attributes instead of using .get()
+        # Use dictionary access for consistency
         tasks_scheduled_count = max(1, len(schedule_data.get('scheduled_tasks', [])))
-        mood_score = feedback_data.mood_score  # Changed from feedback_data.get('mood_score', 3)
+        mood_score = feedback_data.get('mood_score', 3)
         
         targets = {
             'mood_score': mood_score,
-            'task_adjustments': len(feedback_data.adjusted_tasks),  # Changed from feedback_data.get('adjusted_tasks', [])
-            'completion_rate': len(feedback_data.completed_tasks) / tasks_scheduled_count  # Changed from feedback_data.get('completed_tasks', [])
+            'task_adjustments': len(feedback_data.get('adjusted_tasks', [])),
+            'completion_rate': len(feedback_data.get('completed_tasks', [])) / tasks_scheduled_count
         }
         
         # Combine features and targets

@@ -124,11 +124,14 @@ async def optimize_schedule(request: ScheduleRequest):
 @app.post("/record_feedback", status_code=200)
 async def record_feedback(request: FeedbackRequest):
     try:
+        # Convert feedback_data Pydantic model to dict
+        feedback_dict = request.feedback_data.model_dump()
+        
         # Record feedback for ML learning
         ml_learner.record_feedback(
             user_id=request.user_id,
             schedule_data=request.schedule_data,
-            feedback_data=request.feedback_data
+            feedback_data=feedback_dict  # Pass as dictionary instead of Pydantic model
         )
         
         return {"status": "success", "message": "Feedback recorded successfully"}

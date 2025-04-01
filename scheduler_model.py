@@ -69,14 +69,10 @@ class TaskScheduler:
         You can refine this as you see fit.
         """
         # Simple logic: If due is in 0 or negative days_to_due => must be done today (mandatory).
-        # If due is in the future, we weight it less. You can tweak as needed.
+        # If due is in the future, we weight it less.
         # E.g., reduce the value by each day away, but not below 1.
         
-        # If due is in 1 day, no reduction. If 2 days away, reduce a bit more, etc.
-        # Here, we do something simple:
-        #   score = base_priority + max(0, 3 - days_to_due)
-        # So if it's 2 days away, we add +1, if it's 3 or more days away, add 0.
-        
+        # If due is in 1 day, no reduction. If 2 days away, reduce a bit more, etc.        
         score = base_priority + max(0, 3 - days_to_due)
         return max(score, 1)
     
@@ -277,9 +273,6 @@ class TaskScheduler:
         #    If mandatory => always add its duration
         #    If optional => add duration * presence
         scheduled_time_var = model.NewIntVar(0, work_end - work_start, "scheduled_time")
-        
-        # We can't directly do an expression assignment with presence * duration in CP-SAT,
-        # so we do a sum. We'll store them in a list, then add them up with an Add(...) constraint.
         partial_sum = []
         
         for task_id, tv in task_vars.items():
