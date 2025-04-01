@@ -31,6 +31,17 @@ class MLConstraintLearner:
             'mood_predictor': None
         }
     
+    def _priority_to_value(self, priority):
+        """Convert string priority to numeric scale."""
+        if isinstance(priority, int):
+            return priority
+        priority_map = {
+            'High': 3,
+            'Medium': 2,
+            'Low': 1
+        }
+        return priority_map.get(priority, 1)
+    
     def _get_user_data_path(self, user_id):
         """Get path to user's data file."""
         return os.path.join(self.data_dir, f'user_{user_id}_feedback.csv')
@@ -155,7 +166,7 @@ class MLConstraintLearner:
         for tk in tasks:
             start_dt = datetime.fromisoformat(tk['start'].replace('Z', '+00:00'))
             end_dt   = datetime.fromisoformat(tk['end'].replace('Z', '+00:00'))
-            priority = tk.get('priority', 2)  # 2 ~ Medium
+            priority = self._priority_to_value(tk.get('priority', 'Medium'))
             mandatory_flag = tk.get('mandatory', True)
             
             duration = (end_dt - start_dt).total_seconds() / 60
