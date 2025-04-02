@@ -101,11 +101,24 @@ async def optimize_schedule(request: ScheduleRequest):
         )
         
         if result['status'] == 'error':
+            # Log diagnostic information if available
+            if 'diagnostics' in result:
+                print(f"Scheduling diagnostics: {result['diagnostics']}")
+                
             return ScheduleResponse(
                 status="error",
                 message=result['message']
             )
         
+        # Handle partial schedules
+        if result['status'] == 'partial':
+            return ScheduleResponse(
+                status="partial",
+                message=result['message'],
+                scheduled_tasks=result['scheduled_tasks']
+            )
+        
+        # Success case
         return ScheduleResponse(
             status="success",
             scheduled_tasks=result['scheduled_tasks']
