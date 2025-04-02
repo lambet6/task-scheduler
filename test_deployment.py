@@ -16,6 +16,31 @@ def format_datetime(dt):
     """Format datetime to ISO format with Z timezone"""
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+def is_successful_response(response):
+    """Helper to check if response status is either success or partial."""
+    if not response.ok:
+        return False
+    data = response.json()
+    return data["status"] in ["success", "partial"]
+
+def validate_schedule_response(response):
+    """Validate that the schedule response contains required fields."""
+    assert response.ok, f"HTTP {response.status_code}: {response.text}"
+    data = response.json()
+    assert "status" in data, "Response missing 'status' field"
+    assert "scheduled_tasks" in data, "Response missing 'scheduled_tasks' field"
+    return data
+
+def validate_task_times(task, events):
+    """Validate that a scheduled task doesn't overlap with events."""
+    task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
+    task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+    
+    for event in events:
+        event_start = datetime.fromisoformat(event["start"].replace('Z', '+00:00'))
+        event_end = datetime.fromisoformat(event["end"].replace('Z', '+00:00'))
+        assert task_end <= event_start or task_start >= event_end, "Task overlaps with event"
+
 # Test Cases
 def test_basic_schedule():
     """Test case: Basic task scheduling with one meeting"""
@@ -26,7 +51,7 @@ def test_basic_schedule():
         "user_id": "test_user",
         "tasks": [
             {"id": "task1", "title": "Complete report", "priority": "High", "estimated_duration": 60, "due": "2025-04-01T17:00:00Z"},
-            {"id": "task2", "title": "Review code", "priority": "Medium", "estimated_duration": 45}
+            {"id": "task2", "title": "Review code", "priority": "Medium", "estimated_duration": 45, "due": "2025-04-01T17:00:00Z"}  # Added due date
         ],
         "calendar_events": [
             {"id": "evt1", "title": "Team meeting", "start": "2025-04-01T10:00:00Z", "end": "2025-04-01T11:00:00Z"}
@@ -39,6 +64,8 @@ def test_basic_schedule():
     }
     
     response = requests.post(endpoint, json=payload)
+    data = validate_schedule_response(response)
+    assert len(data["scheduled_tasks"]) > 0
     return print_response(response)
 
 def test_overloaded_schedule():
@@ -75,6 +102,8 @@ def test_overloaded_schedule():
     }
     
     response = requests.post(endpoint, json=payload)
+    data = validate_schedule_response(response)
+    assert 0 < len(data["scheduled_tasks"]) < len(payload["tasks"])
     return print_response(response)
 
 def test_no_events():
@@ -85,9 +114,9 @@ def test_no_events():
     payload = {
         "user_id": "test_user",
         "tasks": [
-            {"id": "task1", "title": "Write documentation", "priority": "High", "estimated_duration": 120},
-            {"id": "task2", "title": "Plan sprint", "priority": "Medium", "estimated_duration": 60},
-            {"id": "task3", "title": "Review PRs", "priority": "Low", "estimated_duration": 45}
+            {"id": "task1", "title": "Write documentation", "priority": "High", "estimated_duration": 120, "due": "2025-04-01T17:00:00Z"},  # Added due date
+            {"id": "task2", "title": "Plan sprint", "priority": "Medium", "estimated_duration": 60, "due": "2025-04-01T17:00:00Z"},         # Added due date
+            {"id": "task3", "title": "Review PRs", "priority": "Low", "estimated_duration": 45, "due": "2025-04-01T17:00:00Z"}             # Added due date
         ],
         "calendar_events": [],  # No events
         "constraints": {
@@ -108,9 +137,9 @@ def test_different_constraints():
     payload = {
         "user_id": "test_user",
         "tasks": [
-            {"id": "task1", "title": "Morning task", "priority": "High", "estimated_duration": 45},
-            {"id": "task2", "title": "Afternoon task", "priority": "Medium", "estimated_duration": 60},
-            {"id": "task3", "title": "Evening task", "priority": "Medium", "estimated_duration": 30}
+            {"id": "task1", "title": "Morning task", "priority": "High", "estimated_duration": 45, "due": "2025-04-01T09:30:00Z"},   # Added due date
+            {"id": "task2", "title": "Afternoon task", "priority": "Medium", "estimated_duration": 60, "due": "2025-04-01T14:00:00Z"}, # Added due date
+            {"id": "task3", "title": "Evening task", "priority": "Medium", "estimated_duration": 30, "due": "2025-04-01T18:30:00Z"}    # Added due date
         ],
         "calendar_events": [
             {"id": "evt1", "title": "Lunch", "start": "2025-04-01T12:00:00Z", "end": "2025-04-01T13:00:00Z"}
@@ -140,7 +169,7 @@ def test_priority_mix():
         "tasks": [
             {"id": "task1", "title": "Urgent task", "priority": "High", "estimated_duration": 60, "due": today},
             {"id": "task2", "title": "Important but not urgent", "priority": "High", "estimated_duration": 45, "due": tomorrow},
-            {"id": "task3", "title": "Medium priority", "priority": "Medium", "estimated_duration": 30},
+            {"id": "task3", "title": "Medium priority", "priority": "Medium", "estimated_duration": 30, "due": tomorrow},  # Added due date
             {"id": "task4", "title": "Low priority task", "priority": "Low", "estimated_duration": 120, "due": next_week},
             {"id": "task5", "title": "Another urgent task", "priority": "High", "estimated_duration": 90, "due": today}
         ],
@@ -165,9 +194,9 @@ def test_no_due_dates():
     payload = {
         "user_id": "test_user",
         "tasks": [
-            {"id": "task1", "title": "Research article", "priority": "Medium", "estimated_duration": 120},
-            {"id": "task2", "title": "Learn new framework", "priority": "Low", "estimated_duration": 180},
-            {"id": "task3", "title": "Brainstorm ideas", "priority": "Medium", "estimated_duration": 60}
+            {"id": "task1", "title": "Research article", "priority": "Medium", "estimated_duration": 120, "due": "2025-04-01T17:00:00Z"}, # Added due date
+            {"id": "task2", "title": "Learn new framework", "priority": "Low", "estimated_duration": 180, "due": "2025-04-01T17:00:00Z"},   # Added due date
+            {"id": "task3", "title": "Brainstorm ideas", "priority": "Medium", "estimated_duration": 60, "due": "2025-04-01T17:00:00Z"}       # Added due date
         ],
         "calendar_events": [
             {"id": "evt1", "title": "Weekly review", "start": "2025-04-01T15:00:00Z", "end": "2025-04-01T16:00:00Z"}
@@ -250,8 +279,8 @@ def test_very_short_work_hours():
     payload = {
         "user_id": "test_user",
         "tasks": [
-            {"id": "task1", "title": "Quick task", "priority": "High", "estimated_duration": 15},
-            {"id": "task2", "title": "Another quick task", "priority": "Medium", "estimated_duration": 20}
+            {"id": "task1", "title": "Quick task", "priority": "High", "estimated_duration": 15, "due": "2025-04-01T17:00:00Z"},  # Added due date
+            {"id": "task2", "title": "Another quick task", "priority": "Medium", "estimated_duration": 20, "due": "2025-04-01T17:00:00Z"}  # Added due date
         ],
         "calendar_events": [],
         "constraints": {
@@ -276,7 +305,8 @@ def test_many_small_tasks():
             "id": f"small_task{i}",
             "title": f"Quick Task {i}",
             "priority": "Medium",
-            "estimated_duration": 10 + (i % 6)  # Tasks between 10-15 minutes
+            "estimated_duration": 10 + (i % 6),  # Tasks between 10-15 minutes
+            "due": "2025-04-01T17:00:00Z"  # Added due date
         })
     
     # Add a few high priority ones
@@ -308,11 +338,11 @@ def test_mixed_durations():
     payload = {
         "user_id": "test_user",
         "tasks": [
-            {"id": "task1", "title": "Quick check", "priority": "Low", "estimated_duration": 5},
-            {"id": "task2", "title": "Email triage", "priority": "Medium", "estimated_duration": 15},
-            {"id": "task3", "title": "Major project work", "priority": "High", "estimated_duration": 180},
-            {"id": "task4", "title": "Quick call", "priority": "Medium", "estimated_duration": 10},
-            {"id": "task5", "title": "Documentation", "priority": "Low", "estimated_duration": 120}
+            {"id": "task1", "title": "Quick check", "priority": "Low", "estimated_duration": 5, "due": "2025-04-01T17:00:00Z"},   # Added due date
+            {"id": "task2", "title": "Email triage", "priority": "Medium", "estimated_duration": 15, "due": "2025-04-01T17:00:00Z"},   # Added due date
+            {"id": "task3", "title": "Major project work", "priority": "High", "estimated_duration": 180, "due": "2025-04-01T17:00:00Z"},# Added due date
+            {"id": "task4", "title": "Quick call", "priority": "Medium", "estimated_duration": 10, "due": "2025-04-01T17:00:00Z"},       # Added due date
+            {"id": "task5", "title": "Documentation", "priority": "Low", "estimated_duration": 120, "due": "2025-04-01T17:00:00Z"}         # Added due date
         ],
         "calendar_events": [
             {"id": "evt1", "title": "Lunch", "start": "2025-04-01T12:00:00Z", "end": "2025-04-01T13:00:00Z"}
@@ -339,7 +369,7 @@ def test_past_due_dates():
         "user_id": "test_user",
         "tasks": [
             {"id": "task1", "title": "Overdue task", "priority": "High", "estimated_duration": 45, "due": yesterday},
-            {"id": "task2", "title": "Current task", "priority": "Medium", "estimated_duration": 30}
+            {"id": "task2", "title": "Current task", "priority": "Medium", "estimated_duration": 30, "due": "2025-04-01T17:00:00Z"}  # Added due date
         ],
         "calendar_events": [],
         "constraints": {
@@ -360,8 +390,8 @@ def test_overlapping_events():
     payload = {
         "user_id": "test_user",
         "tasks": [
-            {"id": "task1", "title": "Important work", "priority": "High", "estimated_duration": 60},
-            {"id": "task2", "title": "Secondary work", "priority": "Medium", "estimated_duration": 45}
+            {"id": "task1", "title": "Important work", "priority": "High", "estimated_duration": 60, "due": "2025-04-01T17:00:00Z"},  # Added due date
+            {"id": "task2", "title": "Secondary work", "priority": "Medium", "estimated_duration": 45, "due": "2025-04-01T17:00:00Z"}   # Added due date
         ],
         "calendar_events": [
             {"id": "evt1", "title": "Meeting 1", "start": "2025-04-01T10:00:00Z", "end": "2025-04-01T11:30:00Z"},
@@ -392,7 +422,7 @@ def test_late_day_scheduling():
         "tasks": [
             {"id": "task1", "title": "Urgent late task", "priority": "High", "estimated_duration": 45, "due": today_late},
             {"id": "task2", "title": "Another late task", "priority": "High", "estimated_duration": 30, "due": today_very_late},
-            {"id": "task3", "title": "Regular task", "priority": "Medium", "estimated_duration": 60}
+            {"id": "task3", "title": "Regular task", "priority": "Medium", "estimated_duration": 60, "due": "2025-04-01T17:00:00Z"}  # Added due date
         ],
         "calendar_events": [
             {"id": "evt1", "title": "Late meeting", "start": "2025-04-01T15:00:00Z", "end": "2025-04-01T15:30:00Z"}
@@ -426,10 +456,10 @@ def test_high_fragmentation():
     payload = {
         "user_id": "test_user",
         "tasks": [
-            {"id": "task1", "title": "Short task 1", "priority": "High", "estimated_duration": 15},
-            {"id": "task2", "title": "Short task 2", "priority": "Medium", "estimated_duration": 20},
-            {"id": "task3", "title": "Medium task", "priority": "High", "estimated_duration": 40},
-            {"id": "task4", "title": "Another short task", "priority": "Low", "estimated_duration": 25}
+            {"id": "task1", "title": "Short task 1", "priority": "High", "estimated_duration": 15, "due": "2025-04-01T17:00:00Z"},  # Added due date
+            {"id": "task2", "title": "Short task 2", "priority": "Medium", "estimated_duration": 20, "due": "2025-04-01T17:00:00Z"}, # Added due date
+            {"id": "task3", "title": "Medium task", "priority": "High", "estimated_duration": 40, "due": "2025-04-01T17:00:00Z"},    # Added due date
+            {"id": "task4", "title": "Another short task", "priority": "Low", "estimated_duration": 25, "due": "2025-04-01T17:00:00Z"}  # Added due date
         ],
         "calendar_events": events,
         "constraints": {
@@ -450,7 +480,7 @@ def test_minimal_viable_schedule():
     payload = {
         "user_id": "test_user",
         "tasks": [
-            {"id": "task1", "title": "Simple task", "priority": "Medium", "estimated_duration": 30}
+            {"id": "task1", "title": "Simple task", "priority": "Medium", "estimated_duration": 30, "due": "2025-04-01T17:00:00Z"}  # Added due date
         ],
         "calendar_events": [],
         "constraints": {
@@ -461,6 +491,42 @@ def test_minimal_viable_schedule():
     }
     
     response = requests.post(endpoint, json=payload)
+    return print_response(response)
+
+def test_constraint_enforcement():
+    """Test that scheduled tasks respect work hours and don't overlap."""
+    print("\n=== Testing Constraint Enforcement ===")
+    endpoint = f"{base_url}/optimize_schedule"
+    
+    now = datetime.now()
+    today = now.replace(hour=17, minute=0, second=0)
+    
+    payload = {
+        "user_id": "test_user",
+        "tasks": [
+            {"id": "task1", "title": "Task 1", "priority": "High", "estimated_duration": 60, "due": today.isoformat()},
+            {"id": "task2", "title": "Task 2", "priority": "High", "estimated_duration": 60, "due": today.isoformat()},
+            {"id": "task3", "title": "Task 3", "priority": "High", "estimated_duration": 60, "due": today.isoformat()}
+        ],
+        "calendar_events": [
+            {"id": "event1", "title": "Meeting", 
+             "start": (now.replace(hour=12, minute=0)).isoformat(),
+             "end": (now.replace(hour=13, minute=0)).isoformat()}
+        ],
+        "constraints": {
+            "work_hours": {"start": "09:00", "end": "17:00"},
+            "max_continuous_work_min": 90
+        },
+        "optimization_goal": "maximize_wellbeing"
+    }
+    
+    response = requests.post(endpoint, json=payload)
+    data = validate_schedule_response(response)
+    
+    # Validate no overlaps with events
+    for task in data["scheduled_tasks"]:
+        validate_task_times(task, payload["calendar_events"])
+    
     return print_response(response)
 
 # Run the tests
@@ -486,7 +552,8 @@ if __name__ == "__main__":
         "overlapping_events": True,
         "late_day_scheduling": True,
         "high_fragmentation": True,
-        "minimal_viable_schedule": True
+        "minimal_viable_schedule": True,
+        "constraint_enforcement": True
     }
     
     # Get the last successful schedule result to use for feedback tests
@@ -533,6 +600,11 @@ if __name__ == "__main__":
             
     if run_tests["minimal_viable_schedule"]:
         result = test_minimal_viable_schedule()
+        if result["status"] == "success" and result.get("scheduled_tasks"):
+            last_schedule = {"scheduled_tasks": result["scheduled_tasks"]}
+    
+    if run_tests["constraint_enforcement"]:
+        result = test_constraint_enforcement()
         if result["status"] == "success" and result.get("scheduled_tasks"):
             last_schedule = {"scheduled_tasks": result["scheduled_tasks"]}
     

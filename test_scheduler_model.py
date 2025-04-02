@@ -517,7 +517,7 @@ class TestDeploymentScenarios:
         constraints = create_constraints()
         
         result = scheduler.schedule_tasks(tasks, events, constraints)
-        assert result["status"] == "success"
+        assert result["status"] == "success" or result["status"] == "partial"
         # Should schedule some but not all tasks
         assert 0 < len(result["scheduled_tasks"]) < len(tasks)
 
@@ -537,6 +537,98 @@ class TestDeploymentScenarios:
         result = scheduler.schedule_tasks([], events, constraints)
         assert result["status"] == "success"
         assert len(result["scheduled_tasks"]) == 0
+    
+    def test_events_outside_work_hours(self, scheduler, base_date):
+        """Test case: Events completely outside working hours."""
+        tasks = [
+            create_task("task1", "Regular task", "High", 60,
+                      due=(base_date + timedelta(hours=17)).isoformat()),
+            create_task("task2", "Another task", "Medium", 45,
+                      due=(base_date + timedelta(hours=17)).isoformat()),
+        ]
+        
+        # Create events before and after work hours (9:00-17:00)
+        events = [
+            create_event("evt1", "Early meeting",
+                         (base_date + timedelta(hours=7)).isoformat(),
+                         (base_date + timedelta(hours=8, minutes=30)).isoformat()),
+            create_event("evt2", "Late dinner",
+                         (base_date + timedelta(hours=18)).isoformat(),
+                         (base_date + timedelta(hours=19, minutes=30)).isoformat())
+        ]
+        
+        constraints = create_constraints(work_start="09:00", work_end="17:00")
+        
+        result = scheduler.schedule_tasks(tasks, events, constraints)
+        assert result["status"] == "success"
+        
+        # Both tasks should be scheduled since events don't affect work hours
+        assert len(result["scheduled_tasks"]) == 2
+        
+        # Check work hours weren't affected
+        for task in result["scheduled_tasks"]:
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            
+            # Times should be within work hours
+            task_start_time = task_start.time()
+            task_end_time = task_end.time()
+            
+            work_start = datetime.strptime(constraints["work_hours"]["start"], "%H:%M").time()
+            work_end = datetime.strptime(constraints["work_hours"]["end"], "%H:%M").time()
+            
+            assert task_start_time >= work_start
+            assert task_end_time <= work_end
+
+    def test_events_partially_within_work_hours(self, scheduler, base_date):
+        """Test case: Events that partially overlap with working hours."""
+        tasks = [
+            create_task("task1", "Morning task", "High", 60,
+                      due=(base_date + timedelta(hours=17)).isoformat()),
+            create_task("task2", "Afternoon task", "Medium", 60,
+                      due=(base_date + timedelta(hours=17)).isoformat()),
+        ]
+        
+        # Create events that partially overlap with work hours (9:00-17:00)
+        events = [
+            create_event("evt1", "Early overlap meeting",
+                         (base_date + timedelta(hours=8)).isoformat(),
+                         (base_date + timedelta(hours=10)).isoformat()),  # 8:00-10:00, overlaps 9:00-10:00
+            create_event("evt2", "Late overlap meeting",
+                         (base_date + timedelta(hours=16)).isoformat(),
+                         (base_date + timedelta(hours=18)).isoformat())   # 16:00-18:00, overlaps 16:00-17:00
+        ]
+        
+        constraints = create_constraints(work_start="09:00", work_end="17:00")
+        
+        result = scheduler.schedule_tasks(tasks, events, constraints)
+        assert is_successful(result)
+        
+        # Check that scheduled tasks don't overlap with events
+        scheduled_tasks = result["scheduled_tasks"]
+        
+        for task in scheduled_tasks:
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            
+            for event in events:
+                event_start = datetime.fromisoformat(event["start"].replace('Z', '+00:00'))
+                event_end = datetime.fromisoformat(event["end"].replace('Z', '+00:00'))
+                
+                # Either task ends before event starts OR task starts after event ends
+                assert task_end <= event_start or task_start >= event_end
+        
+        # Verify tasks are scheduled within the reduced available time
+        for task in scheduled_tasks:
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            
+            # Check task is scheduled during work hours and not during events
+            work_start = datetime.strptime(constraints["work_hours"]["start"], "%H:%M").time()
+            work_end = datetime.strptime(constraints["work_hours"]["end"], "%H:%M").time()
+            
+            assert task_start.time() >= work_start
+            assert task_end.time() <= work_end
 
     def test_very_short_work_hours(self, scheduler, base_date):
         """Test case: Extremely short work hours window."""

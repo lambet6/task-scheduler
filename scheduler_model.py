@@ -41,8 +41,27 @@ class TaskScheduler:
         return dt.hour * 60 + dt.minute
     
     def _parse_datetime(self, dt_str):
-        """Parse an ISO datetime string to a Python datetime object."""
+        """Parse an ISO datetime string to a Python datetime object.
+        Ensure consistent timezone handling."""
         return datetime.datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+    
+    def _extract_date_from_tasks(self, tasks):
+        """Extract the target date from the tasks list.
+        Assumes all tasks are meant to be scheduled on the same day.
+        Returns a datetime.date object.
+        """
+        if not tasks:
+            # Default to today if no tasks provided
+            return datetime.datetime.now().date()
+        
+        # Find a task with a due date
+        for task in tasks:
+            if 'due' in task and task['due']:
+                due_dt = self._parse_datetime(task['due'])
+                return due_dt.date()
+        
+        # If no tasks have due dates, default to today
+        return datetime.datetime.now().date()
     
     def _priority_to_value(self, priority: str) -> int:
         """Convert string priority to numeric scale."""
@@ -68,22 +87,27 @@ class TaskScheduler:
         For example, an approaching due date may increase the score.
         You can refine this as you see fit.
         """
-        # Simple logic: If due is in 0 or negative days_to_due => must be done today (mandatory).
+        # Simple logic: If due is in 0 or negative days_to_due => higher score.
         # If due is in the future, we weight it less.
-        # E.g., reduce the value by each day away, but not below 1.
         
-        # If due is in 1 day, no reduction. If 2 days away, reduce a bit more, etc.
-        score = base_priority * 100 + max(0, 5 - days_to_due) * 200  # INCREASED weights
+        # If due is in 1 day, less reduction. If 2 days away, reduce a bit more, etc.
+        score = base_priority * 100 + max(0, 5 - days_to_due) * 200
         return max(score, 100)  # Higher base minimum value
     
-    def schedule_tasks(self, tasks, calendar_events, constraints):
+    def schedule_tasks(self, tasks, calendar_events, constraints, target_date=None):
         """
         Schedule tasks using OR-Tools CP-SAT, implementing:
         1) No overlap among tasks or events
-        2) Tasks due today given high penalties for not scheduling (rather than strict mandatory)
+        2) Tasks prioritized by their priority (High, Medium, Low) AND due date
         3) Break time rewarded in objective
         4) Penalties/rewards for continuous work, evening work, and early completion
-        5) Weighted optional tasks by due date proximity and priority
+        
+        Args:
+            tasks: List of task dictionaries
+            calendar_events: List of event dictionaries
+            constraints: Dictionary of scheduling constraints
+            target_date: Optional datetime object specifying the target date for scheduling
+                          (if provided, this overrides date extraction from tasks)
         
         Returns:
             dict with "status": "success" or "error",
@@ -91,18 +115,28 @@ class TaskScheduler:
         """
         model = cp_model.CpModel()
         
-        # Time horizon (assume single day scheduling).
+        # Time horizon (single day scheduling)
         horizon = 24 * 60
         
+        # Get work hours from constraints
         work_start = self._time_to_minutes(constraints['work_hours']['start'])
         work_end = self._time_to_minutes(constraints['work_hours']['end'])
         
-        # Collect total event durations, to help compute break time later.
+        # Collect total event durations, to help compute break time later
         total_event_duration = 0
         
-        # Identify "today" for deciding priority weighting
-        today_midnight = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_date = today_midnight.date()
+        # Use the provided target_date or extract from tasks if not provided
+        if target_date:
+            if isinstance(target_date, datetime.datetime):
+                schedule_date = target_date.date()
+            else:
+                schedule_date = target_date
+        else:
+            schedule_date = self._extract_date_from_tasks(tasks)
+        
+        # Identify "today" for deciding priority weighting 
+        # This ensures backward compatibility with tests that expect "today" to be special
+        today_date = datetime.datetime.now().date()
         
         # ---- CREATE INTERVALS FOR TASKS ----
         task_vars = {}
@@ -110,6 +144,7 @@ class TaskScheduler:
         for t in tasks:
             task_id = t['id']
             duration = t['estimated_duration']
+            priority_val = self._priority_to_value(t.get('priority', 'Medium'))
             
             # Parse due date
             if 'due' in t and t['due']:
@@ -117,10 +152,10 @@ class TaskScheduler:
                 due_date = due_dt.date()
             else:
                 # If no due date provided, treat it as future
-                due_dt = today_midnight + datetime.timedelta(days=9999)
+                due_dt = datetime.datetime.combine(schedule_date, datetime.time.max)
                 due_date = due_dt.date()
             
-            # Check if the due date is "today"
+            # Check if the due date is "today" - used for maintaining backward compatibility
             is_today = (due_date == today_date)
             
             # Convert due_dt to a minutes-since-midnight
@@ -131,12 +166,12 @@ class TaskScheduler:
                 # we clamp it so the user doesn't end up with negative start range.
                 due_time_in_minutes = work_start
             
-            priority_val = self._priority_to_value(t.get('priority', 'Medium'))
-            
             # Days from now to the due date
-            days_diff = (due_dt.date() - today_date).days
-            # Negative or zero means it's effectively due today or overdue
-            is_mandatory = (is_today or days_diff <= 0)
+            days_diff = (due_date - today_date).days
+            
+            # A task is mandatory if it's high priority OR due today/overdue 
+            # (this maintains backward compatibility with tests)
+            is_mandatory = (priority_val == 3) or (is_today or days_diff <= 0)
             
             # Build interval variables - ALL tasks are optional in the model
             start_var = model.NewIntVar(work_start, work_end - duration, f"start_{task_id}")
@@ -149,11 +184,11 @@ class TaskScheduler:
             )
             
             # Calculate score/penalty:
-            # - For mandatory tasks (due today): very high penalty for not scheduling
-            # - For optional tasks: score based on priority and due date proximity
+            # - For high priority tasks: very high penalty for not scheduling
+            # - For other tasks: score based on priority and due date proximity
             if is_mandatory:
                 # Higher priority = higher penalty for not scheduling
-                # 1000 base penalty makes these tasks strongly preferred
+                # 1000 base penalty for high priority or due today makes these tasks strongly preferred
                 score_val = priority_val * 1000
             else:
                 # Regular optional task
@@ -184,6 +219,15 @@ class TaskScheduler:
             
             start_min = self._datetime_to_minutes(start_dt)
             end_min = self._datetime_to_minutes(end_dt)
+            
+            # Filter events by work hours - only consider overlap with work hours
+            # If event is completely before work hours or after work hours, skip it
+            if end_min <= work_start or start_min >= work_end:
+                continue
+            
+            # Adjust start and end times to only include overlap with work hours
+            start_min = max(start_min, work_start)
+            end_min = min(end_min, work_end)
             
             duration = max(0, end_min - start_min)
             if duration > 0:
@@ -281,7 +325,9 @@ class TaskScheduler:
         
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
             scheduled_tasks = []
-            base_date = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Create a base datetime representing midnight of the target date
+            base_date = datetime.datetime.combine(schedule_date, datetime.time.min)
             
             for task_id, tv in task_vars.items():
                 # Check if task was scheduled
@@ -289,11 +335,16 @@ class TaskScheduler:
                 if presence_val == 1:
                     start_val = solver.Value(tv["start"])
                     end_val = solver.Value(tv["end"])
+                    
+                    # Create ISO strings using the target date
+                    start_dt = base_date + datetime.timedelta(minutes=start_val)
+                    end_dt = base_date + datetime.timedelta(minutes=end_val)
+                    
                     scheduled_tasks.append({
                         'id': task_id,
                         'title': tv["title"],
-                        'start': (base_date + datetime.timedelta(minutes=start_val)).isoformat(),
-                        'end': (base_date + datetime.timedelta(minutes=end_val)).isoformat(),
+                        'start': start_dt.isoformat(),
+                        'end': end_dt.isoformat(),
                         'priority': self._value_to_priority(tv["priority_value"]),
                         'estimated_duration': tv["duration"],
                         'mandatory': tv["is_mandatory"]

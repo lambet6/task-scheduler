@@ -55,6 +55,7 @@ class ScheduleRequest(BaseModel):
     calendar_events: List[EventInput]
     constraints: ScheduleConstraints
     optimization_goal: Optional[str] = "maximize_wellbeing"
+    target_date: Optional[str] = None  # New field for explicit target date
 
 class ScheduledTask(BaseModel):
     id: Union[str, int]
@@ -93,11 +94,26 @@ async def optimize_schedule(request: ScheduleRequest):
         tasks_as_dicts = [task.model_dump() for task in request.tasks]
         events_as_dicts = [event.model_dump() for event in request.calendar_events]
         
-        # Call the scheduler with dictionaries
+        # Prepare additional context for the scheduler
+        scheduling_context = {}
+        
+        # If a target_date was provided, parse it to datetime
+        if request.target_date:
+            try:
+                # Parse the ISO string to datetime (will be used by scheduler to set the base date)
+                target_date = datetime.fromisoformat(request.target_date.replace('Z', '+00:00'))
+                scheduling_context['target_date'] = target_date
+                print(f"Using explicit target date: {target_date}")
+            except ValueError as e:
+                print(f"Warning: Could not parse target_date '{request.target_date}': {e}")
+        
+        # Call the scheduler with dictionaries and context
         result = scheduler.schedule_tasks(
             tasks=tasks_as_dicts,
             calendar_events=events_as_dicts,
-            constraints=request.constraints.model_dump()
+            constraints=request.constraints.model_dump(),
+            # Pass any additional context
+            **scheduling_context
         )
         
         if result['status'] == 'error':
