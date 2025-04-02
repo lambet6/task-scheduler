@@ -72,9 +72,9 @@ class TaskScheduler:
         # If due is in the future, we weight it less.
         # E.g., reduce the value by each day away, but not below 1.
         
-        # If due is in 1 day, no reduction. If 2 days away, reduce a bit more, etc.        
-        score = base_priority * 50 + max(0, 5 - days_to_due) * 100
-        return max(score, 50)
+        # If due is in 1 day, no reduction. If 2 days away, reduce a bit more, etc.
+        score = base_priority * 100 + max(0, 5 - days_to_due) * 200  # INCREASED weights
+        return max(score, 100)  # Higher base minimum value
     
     def schedule_tasks(self, tasks, calendar_events, constraints):
         """
@@ -96,8 +96,6 @@ class TaskScheduler:
         
         work_start = self._time_to_minutes(constraints['work_hours']['start'])
         work_end = self._time_to_minutes(constraints['work_hours']['end'])
-
-        print(f"Work hours: {work_start} to {work_end}")
         
         # Collect total event durations, to help compute break time later.
         total_event_duration = 0
@@ -230,28 +228,21 @@ class TaskScheduler:
         model.Add(scheduled_time_var == sum(partial_sum))
         
         # 2) Break time calculation
-        break_importance = self.ml_params['break_importance']
+        break_importance = self.ml_params['break_importance'] * 0.1  # REDUCED by 10x
         available_work_window = (work_end - work_start) - total_event_duration
-        target_break_minutes = min(120, available_work_window * 0.2)  # Target ~20% of day for breaks, max 2 hours
         break_time_expr = model.NewIntVar(0, available_work_window, "break_time_expr")
         model.Add(break_time_expr == (available_work_window - scheduled_time_var))
-
-        # Reward for having AT LEAST the target break time, but don't reward more than that
-        sufficient_breaks = model.NewBoolVar("sufficient_breaks")
-        model.Add(break_time_expr >= target_break_minutes).OnlyEnforceIf(sufficient_breaks)
-        model.Add(break_time_expr < target_break_minutes).OnlyEnforceIf(sufficient_breaks.Not())
-
-        # Add a fixed bonus for having sufficient breaks
-        objective_terms.append(break_importance * 100 * sufficient_breaks)
+        objective_terms.append(break_importance * break_time_expr)
         
         # 3) Task scheduling rewards/penalties
         for task_id, tv in task_vars.items():
             if tv["is_mandatory"]:
-                mandatory_penalty = tv["score_val"] * 10000 
-                objective_terms.append(-mandatory_penalty * tv["presence"].Not())
+                # Penalty for NOT scheduling mandatory tasks (high penalty)
+                # This will be added only when presence=0
+                objective_terms.append(-tv["score_val"] * 50 * tv["presence"].Not())  # INCREASED by 50x
             else:
                 # Reward for scheduling optional tasks
-                presence_score = tv["score_val"] * 500  # Increased from 100
+                presence_score = tv["score_val"] * 500  # INCREASED by 5x
                 objective_terms.append(presence_score * tv["presence"])
         
         # 4) Early completion bonus
@@ -264,17 +255,17 @@ class TaskScheduler:
         
         # 5) Evening penalty
         evening_cutoff = work_end - 60
-        evening_penalty = self.ml_params['evening_work_penalty']
+        evening_penalty = self.ml_params['evening_work_penalty'] * 0.5  # REDUCED by 50%
         for task_id, tv in task_vars.items():
             is_evening = model.NewBoolVar(f"evening_{task_id}")
             model.Add(tv["end"] > evening_cutoff).OnlyEnforceIf(is_evening)
             model.Add(tv["end"] <= evening_cutoff).OnlyEnforceIf(is_evening.Not())
             model.Add(is_evening == 0).OnlyEnforceIf(tv["presence"].Not())
-            objective_terms.append(-1 * is_evening * evening_penalty * 100)
+            objective_terms.append(-1 * is_evening * evening_penalty * 50)  # REDUCED impact
         
         # 6) Continuous work penalty
         max_cont_work = self.ml_params['max_continuous_work']
-        cont_penalty = self.ml_params['continuous_work_penalty']
+        cont_penalty = self.ml_params['continuous_work_penalty'] * 0.2  # REDUCED by 80%
         excess_work = model.NewIntVar(0, work_end - work_start, "excess_work")
         model.Add(excess_work >= scheduled_time_var - max_cont_work)
         model.Add(excess_work >= 0)
@@ -287,14 +278,9 @@ class TaskScheduler:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 30  # can adjust
         status = solver.Solve(model)
-
-        print(f"Solver status: {solver.StatusName(status)}")
-        print(f"Objective value: {solver.ObjectiveValue() if status in [cp_model.OPTIMAL, cp_model.FEASIBLE] else 'N/A'}")
-        
-        # Initialize scheduled_tasks here
-        scheduled_tasks = []
         
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+            scheduled_tasks = []
             base_date = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             
             for task_id, tv in task_vars.items():
@@ -312,8 +298,6 @@ class TaskScheduler:
                         'estimated_duration': tv["duration"],
                         'mandatory': tv["is_mandatory"]
                     })
-            
-            print(f"Scheduled {len(scheduled_tasks)} out of {len(task_vars)} tasks")
             
             # Check if we scheduled all mandatory tasks
             mandatory_tasks = [tv for tv in task_vars.values() if tv["is_mandatory"]]
