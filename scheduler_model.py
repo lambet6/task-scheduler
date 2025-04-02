@@ -80,29 +80,10 @@ class TaskScheduler:
         """
         Schedule tasks using OR-Tools CP-SAT, implementing:
         1) No overlap among tasks or events
-        2) Mandatory tasks for those due today, optional otherwise
+        2) Tasks due today given high penalties for not scheduling (rather than strict mandatory)
         3) Break time rewarded in objective
         4) Penalties/rewards for continuous work, evening work, and early completion
         5) Weighted optional tasks by due date proximity and priority
-        
-        Args:
-            tasks (list): List of dicts with:
-                {
-                  "id": str or int,
-                  "title": str,
-                  "priority": str (High/Medium/Low),
-                  "estimated_duration": int (minutes),
-                  "due": optional str in ISO format
-                }
-            calendar_events (list): Each with start/end in ISO, for blocking time
-            constraints (dict): Must have:
-                {
-                  "work_hours": {
-                      "start": "HH:MM",
-                      "end":   "HH:MM"
-                  },
-                  "max_continuous_work_min": int (unused if we rely on ml_params, but can read if we want)
-                }
         
         Returns:
             dict with "status": "success" or "error",
@@ -119,28 +100,11 @@ class TaskScheduler:
         # Collect total event durations, to help compute break time later.
         total_event_duration = 0
         
-        # Identify "today" for deciding mandatory vs optional
-        # (Assume 'today' is the current date at local midnight.)
+        # Identify "today" for deciding priority weighting
         today_midnight = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Convert that to date for comparison
         today_date = today_midnight.date()
         
         # ---- CREATE INTERVALS FOR TASKS ----
-        
-        # We'll store a structure:
-        # task_vars[task_id] = {
-        #   "start": IntVar,
-        #   "end": IntVar,
-        #   "interval": IntervalVar,
-        #   "presence": BoolVar or None,
-        #   "duration": int,
-        #   "score": optional weighting for optional tasks,
-        #   "title": str,
-        #   "priority_value": int,
-        #   "is_mandatory": bool
-        # }
-        
         task_vars = {}
         
         for t in tasks:
@@ -171,26 +135,28 @@ class TaskScheduler:
             
             # Days from now to the due date
             days_diff = (due_dt.date() - today_date).days
-            # Negative or zero means it's effectively due today or overdue => mandatory
+            # Negative or zero means it's effectively due today or overdue
+            is_mandatory = (is_today or days_diff <= 0)
             
-            # Build interval variables
+            # Build interval variables - ALL tasks are optional in the model
             start_var = model.NewIntVar(work_start, work_end - duration, f"start_{task_id}")
             end_var = model.NewIntVar(work_start + duration, work_end, f"end_{task_id}")
             
-            # If mandatory => "NewIntervalVar", if optional => "NewOptionalIntervalVar"
-            if is_today or days_diff <= 0:
-                # Mandatory
-                interval_var = model.NewIntervalVar(start_var, duration, end_var, f"interval_{task_id}")
-                presence_var = None  # Always present
-                is_mandatory = True
-                score_val = 0  # We'll handle mandatory tasks differently in objective
+            # Make everything optional but with penalty for not scheduling
+            presence_var = model.NewBoolVar(f"presence_{task_id}")
+            interval_var = model.NewOptionalIntervalVar(
+                start_var, duration, end_var, presence_var, f"interval_{task_id}"
+            )
+            
+            # Calculate score/penalty:
+            # - For mandatory tasks (due today): very high penalty for not scheduling
+            # - For optional tasks: score based on priority and due date proximity
+            if is_mandatory:
+                # Higher priority = higher penalty for not scheduling
+                # 1000 base penalty makes these tasks strongly preferred
+                score_val = priority_val * 1000
             else:
-                # Optional
-                presence_var = model.NewBoolVar(f"presence_{task_id}")
-                interval_var = model.NewOptionalIntervalVar(start_var, duration, end_var, presence_var, f"interval_{task_id}")
-                is_mandatory = False
-                
-                # Weighted by priority + how soon it's due
+                # Regular optional task
                 score_val = self._compute_task_score(priority_val, days_diff)
             
             task_vars[task_id] = {
@@ -205,16 +171,9 @@ class TaskScheduler:
                 "score_val": score_val
             }
             
-            # Constrain end by the earlier of the due time or work_end if mandatory
-            if is_mandatory:
-                # Must finish by due_time_in_minutes
-                model.Add(end_var <= due_time_in_minutes)
-            else:
-                # Optional tasks can also not exceed the day or the due_time
-                # We'll clamp at min(due_time_in_minutes, work_end).
-                # If the user wants to let them start after due_time, you can relax here, but typically no.
-                upper_bound = min(due_time_in_minutes, work_end)
-                model.Add(end_var <= upper_bound).OnlyEnforceIf(presence_var)
+            # Constrain end by the earlier of the due time or work_end if present
+            upper_bound = min(due_time_in_minutes, work_end)
+            model.Add(end_var <= upper_bound).OnlyEnforceIf(presence_var)
         
         # ---- CREATE INTERVALS FOR CALENDAR EVENTS (FIXED) ----
         event_intervals = []
@@ -231,19 +190,15 @@ class TaskScheduler:
                 total_event_duration += duration
                 # Create a fixed start variable
                 start_var = model.NewIntVar(start_min, start_min, f"start_event_{evt_id}")
-                # Use NewFixedSizeIntervalVar instead of NewFixedInterval
                 fixed_iv = model.NewFixedSizeIntervalVar(start_var, duration, f"event_{evt_id}")
                 event_intervals.append(fixed_iv)
 
-        # Also block out time before work_start and after work_end
-        # so tasks can't go there
+        # Block out time before work_start and after work_end
         if work_start > 0:
-            # Morning non-work hours
             morning_start = model.NewIntVar(0, 0, "morning_start")
             morning_iv = model.NewFixedSizeIntervalVar(morning_start, work_start, "non_work_morning")
             event_intervals.append(morning_iv)
         if work_end < horizon:
-            # Evening non-work hours
             evening_start = model.NewIntVar(work_end, work_end, "evening_start")
             evening_iv = model.NewFixedSizeIntervalVar(evening_start, horizon - work_end, "non_work_evening")
             event_intervals.append(evening_iv)
@@ -254,128 +209,66 @@ class TaskScheduler:
         
         # ---- MUST START AND END WITHIN WORK HOURS ----
         for tv in task_vars.values():
-            model.Add(tv["start"] >= work_start)
-            model.Add(tv["end"] <= work_end)
-            if tv["is_mandatory"]:
-                # No presence var, so it always must exist
-                pass
-            else:
-                # If presence_var=0, we skip constraints except for the optional interval
-                # i.e. these constraints apply OnlyEnforceIf(presence_var)
-                model.Add(tv["start"] >= work_start).OnlyEnforceIf(tv["presence"])
-                model.Add(tv["end"] <= work_end).OnlyEnforceIf(tv["presence"])
+            model.Add(tv["start"] >= work_start).OnlyEnforceIf(tv["presence"])
+            model.Add(tv["end"] <= work_end).OnlyEnforceIf(tv["presence"])
         
         # ---- OBJECTIVE CONSTRUCTION ----
         objective_terms = []
-        # We'll define some linear expressions for total scheduled time, presence, etc.
         
-        # 1) Sum up total scheduled minutes for tasks
-        #    If mandatory => always add its duration
-        #    If optional => add duration * presence
+        # 1) Sum up total scheduled time
         scheduled_time_var = model.NewIntVar(0, work_end - work_start, "scheduled_time")
         partial_sum = []
         
         for task_id, tv in task_vars.items():
-            if tv["is_mandatory"]:
-                # Always included
-                partial_sum.append(tv["duration"])
-            else:
-                # presence * duration => we introduce an IntVar for that
-                dur_contrib = model.NewIntVar(0, tv["duration"], f"dur_contrib_{task_id}")
-                # dur_contrib == tv["duration"] if presence=1, else 0
-                model.Add(dur_contrib == tv["duration"]).OnlyEnforceIf(tv["presence"])
-                model.Add(dur_contrib == 0).OnlyEnforceIf(tv["presence"].Not())
-                partial_sum.append(dur_contrib)
+            dur_contrib = model.NewIntVar(0, tv["duration"], f"dur_contrib_{task_id}")
+            model.Add(dur_contrib == tv["duration"]).OnlyEnforceIf(tv["presence"])
+            model.Add(dur_contrib == 0).OnlyEnforceIf(tv["presence"].Not())
+            partial_sum.append(dur_contrib)
         
         model.Add(scheduled_time_var == sum(partial_sum))
         
-        # 2) Break time = (available_work_time - total_event_duration) - scheduled_time_var
-        #    We'll treat that as a LinearExpr and add reward:  break_importance * break_time
-        available_work_window = (work_end - work_start) - total_event_duration
-        # We clamp at 0 to avoid negative break if total_event_duration > window
-        # but typically that would lead to infeasibility if events fill the day.
-        
-        # break_time_expr = break_importance * (available_work_window - scheduled_time_var)
-        # We'll do it in objective. Need to ensure the expression doesn't go negative.
-        
-        # 3) Reward or penalty for optional tasks
-        #    For each optional task, if presence=1, add (score_val * 100 or so) to objective
-        #    For mandatory tasks, you might want an incentive for finishing earlier, which we do next.
-        
-        # 4) Early completion bonus for mandatory tasks (or all tasks if desired).
-        #    e.g., -end_time * priority * early_completion_bonus => the solver tries to keep end_time small
-        #    We'll store them individually in objective_terms.
-        
-        # 5) Evening penalty: If a task ends near the end of the day, apply a negative factor.
-        #    We can define a threshold, e.g., last hour of work window is "evening".
-        
-        # 6) Continuous work penalty: approximate by punishing if scheduled_time_var > max_continuous_work
-        #    We'll define an integer var: excess_continuous. Then:
-        #       excess_continuous >= scheduled_time_var - max_continuous_work
-        #    objective -= continuous_work_penalty * excess_continuous
-        
-        # ---- Let's implement them step by step. ----
-        
-        # 2) Break time
+        # 2) Break time calculation
         break_importance = self.ml_params['break_importance']
+        available_work_window = (work_end - work_start) - total_event_duration
         break_time_expr = model.NewIntVar(0, available_work_window, "break_time_expr")
-        # break_time_expr = max(0, available_work_window - scheduled_time_var)
         model.Add(break_time_expr == (available_work_window - scheduled_time_var))
-        
-        # We'll do objective += ( break_importance * break_time_expr ).
-        # CP-SAT wants integer coefficients, so we might do an integer approximation or scale up.
-        # We'll just multiply the expression directly:
         objective_terms.append(break_importance * break_time_expr)
         
-        # 3) Optional tasks: add big reward for scheduling them
+        # 3) Task scheduling rewards/penalties
         for task_id, tv in task_vars.items():
-            if not tv["is_mandatory"]:
-                # presence -> add tv["score_val"] * (some factor)
-                # We'll multiply by, say, 100 so that each point is quite valuable
+            if tv["is_mandatory"]:
+                # Penalty for NOT scheduling mandatory tasks (high penalty)
+                # This will be added only when presence=0
+                objective_terms.append(-tv["score_val"] * tv["presence"].Not())
+            else:
+                # Reward for scheduling optional tasks
                 presence_score = tv["score_val"] * 100
-                # presence_score * presence_var
-                # In CP-SAT, we can do a linear expression: presence_var is 0 or 1,
-                # so we can do presence_score * presence_var. Let's define an IntVar:
-                # or we can do an "AddToObjective" with presence_var * presence_score.
-                # We can do: objective_terms.append(presence_var * presence_score)
-                # We'll do a WeightedSum approach:
                 objective_terms.append(presence_score * tv["presence"])
         
         # 4) Early completion bonus
         early_completion_bonus = self.ml_params['early_completion_bonus']
-        # We'll do for all tasks (esp. mandatory), but you can do only mandatory if you want
-        for tv in task_vars.values():
-            # e.g. -end_var * priority_value * early_completion_bonus, but we want a positive reward
-            # so we do => objective += -(end_var * priority * bonus). We'll do that in a single line:
-            # We want to maximize => so we do negative end time (less end time => bigger objective).
-            # We'll multiply by priority as well if we want higher-priority tasks to finish earlier.
-            # We'll call it: - end * priority * bonus
-            objective_terms.append(
-                -1 * tv["end"] * tv["priority_value"] * early_completion_bonus
-            )
+        for task_id, tv in task_vars.items():
+            end_term = model.NewIntVar(0, work_end, f"end_term_{task_id}")
+            model.Add(end_term == tv["end"]).OnlyEnforceIf(tv["presence"])
+            model.Add(end_term == 0).OnlyEnforceIf(tv["presence"].Not())
+            objective_terms.append(-1 * end_term * tv["priority_value"] * early_completion_bonus)
         
         # 5) Evening penalty
-        # Let's define "evening start" as e.g. 60 minutes before work_end. You can adjust.
         evening_cutoff = work_end - 60
         evening_penalty = self.ml_params['evening_work_penalty']
         for task_id, tv in task_vars.items():
             is_evening = model.NewBoolVar(f"evening_{task_id}")
             model.Add(tv["end"] > evening_cutoff).OnlyEnforceIf(is_evening)
             model.Add(tv["end"] <= evening_cutoff).OnlyEnforceIf(is_evening.Not())
-            # If it's in evening, negative effect => objective -= evening_penalty * 100
+            model.Add(is_evening == 0).OnlyEnforceIf(tv["presence"].Not())
             objective_terms.append(-1 * is_evening * evening_penalty * 100)
         
-        # 6) Continuous work penalty (approx. if total scheduled > max_continuous_work)
+        # 6) Continuous work penalty
         max_cont_work = self.ml_params['max_continuous_work']
         cont_penalty = self.ml_params['continuous_work_penalty']
-        
-        # Define an IntVar for "excess_work"
         excess_work = model.NewIntVar(0, work_end - work_start, "excess_work")
-        # excess_work >= scheduled_time_var - max_cont_work
         model.Add(excess_work >= scheduled_time_var - max_cont_work)
         model.Add(excess_work >= 0)
-        
-        # objective -= cont_penalty * excess_work * 10 (scaled)
         objective_terms.append(-1 * cont_penalty * 10 * excess_work)
         
         # Combine into final objective
@@ -386,47 +279,60 @@ class TaskScheduler:
         solver.parameters.max_time_in_seconds = 30  # can adjust
         status = solver.Solve(model)
         
-        # Find this section in the schedule_tasks method (around line 400):
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
             scheduled_tasks = []
             base_date = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             
             for task_id, tv in task_vars.items():
-                if tv["is_mandatory"]:
-                    # Always scheduled
+                # Check if task was scheduled
+                presence_val = solver.Value(tv["presence"])
+                if presence_val == 1:
                     start_val = solver.Value(tv["start"])
-                    end_val   = solver.Value(tv["end"])
+                    end_val = solver.Value(tv["end"])
                     scheduled_tasks.append({
                         'id': task_id,
                         'title': tv["title"],
                         'start': (base_date + datetime.timedelta(minutes=start_val)).isoformat(),
-                        'end':   (base_date + datetime.timedelta(minutes=end_val)).isoformat(),
-                        'priority': self._value_to_priority(tv["priority_value"]),  # Convert to string
+                        'end': (base_date + datetime.timedelta(minutes=end_val)).isoformat(),
+                        'priority': self._value_to_priority(tv["priority_value"]),
                         'estimated_duration': tv["duration"],
-                        'mandatory': True
+                        'mandatory': tv["is_mandatory"]
                     })
-                else:
-                    # Optional => only if presence=1
-                    presence_val = solver.Value(tv["presence"])
-                    if presence_val == 1:
-                        start_val = solver.Value(tv["start"])
-                        end_val   = solver.Value(tv["end"])
-                        scheduled_tasks.append({
-                            'id': task_id,
-                            'title': tv["title"],
-                            'start': (base_date + datetime.timedelta(minutes=start_val)).isoformat(),
-                            'end':   (base_date + datetime.timedelta(minutes=end_val)).isoformat(),
-                            'priority': self._value_to_priority(tv["priority_value"]),  # Convert to string
-                            'estimated_duration': tv["duration"],
-                            'mandatory': False
-                        })
+            
+            # Check if we scheduled all mandatory tasks
+            mandatory_tasks = [tv for tv in task_vars.values() if tv["is_mandatory"]]
+            mandatory_scheduled = all(
+                solver.Value(tv["presence"]) == 1 
+                for tv in task_vars.values() 
+                if tv["is_mandatory"]
+            )
+            
+            if not mandatory_scheduled and mandatory_tasks:
+                return {
+                    'status': 'partial',
+                    'message': 'Could not schedule all high-priority tasks due to time constraints',
+                    'scheduled_tasks': scheduled_tasks
+                }
             
             return {
                 'status': 'success',
                 'scheduled_tasks': scheduled_tasks
             }
         else:
+            # Return diagnostics with the error
+            total_task_mins = sum(tv["duration"] for tv in task_vars.values())
+            mandatory_mins = sum(tv["duration"] for tv in task_vars.values() if tv["is_mandatory"])
+            available_mins = (work_end - work_start) - total_event_duration
+            
             return {
                 'status': 'error',
-                'message': f'No feasible solution found. Solver status: {solver.StatusName(status)}'
+                'message': f'No feasible solution found. Solver status: {solver.StatusName(status)}',
+                'diagnostics': {
+                    'total_tasks': len(tasks),
+                    'mandatory_tasks': sum(1 for tv in task_vars.values() if tv["is_mandatory"]),
+                    'total_task_minutes': total_task_mins,
+                    'mandatory_task_minutes': mandatory_mins,
+                    'available_minutes': available_mins,
+                    'calendar_event_minutes': total_event_duration
+                }
             }

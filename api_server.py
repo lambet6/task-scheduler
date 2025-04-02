@@ -12,10 +12,10 @@ from ml_constraint_learner import MLConstraintLearner
 
 app = FastAPI(title="Task Scheduler API")
 
-# Add CORS middleware to allow requests from your React Native app
+# Add CORS middleware to allow requests from React Native app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Specify your app's domain in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
