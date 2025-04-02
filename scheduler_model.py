@@ -73,8 +73,8 @@ class TaskScheduler:
         # E.g., reduce the value by each day away, but not below 1.
         
         # If due is in 1 day, no reduction. If 2 days away, reduce a bit more, etc.        
-        score = base_priority + max(0, 3 - days_to_due)
-        return max(score, 1)
+        score = base_priority * 50 + max(0, 5 - days_to_due) * 100
+        return max(score, 50)
     
     def schedule_tasks(self, tasks, calendar_events, constraints):
         """
@@ -96,6 +96,8 @@ class TaskScheduler:
         
         work_start = self._time_to_minutes(constraints['work_hours']['start'])
         work_end = self._time_to_minutes(constraints['work_hours']['end'])
+
+        print(f"Work hours: {work_start} to {work_end}")
         
         # Collect total event durations, to help compute break time later.
         total_event_duration = 0
@@ -230,19 +232,26 @@ class TaskScheduler:
         # 2) Break time calculation
         break_importance = self.ml_params['break_importance']
         available_work_window = (work_end - work_start) - total_event_duration
+        target_break_minutes = min(120, available_work_window * 0.2)  # Target ~20% of day for breaks, max 2 hours
         break_time_expr = model.NewIntVar(0, available_work_window, "break_time_expr")
         model.Add(break_time_expr == (available_work_window - scheduled_time_var))
-        objective_terms.append(break_importance * break_time_expr)
+
+        # Reward for having AT LEAST the target break time, but don't reward more than that
+        sufficient_breaks = model.NewBoolVar("sufficient_breaks")
+        model.Add(break_time_expr >= target_break_minutes).OnlyEnforceIf(sufficient_breaks)
+        model.Add(break_time_expr < target_break_minutes).OnlyEnforceIf(sufficient_breaks.Not())
+
+        # Add a fixed bonus for having sufficient breaks
+        objective_terms.append(break_importance * 100 * sufficient_breaks)
         
         # 3) Task scheduling rewards/penalties
         for task_id, tv in task_vars.items():
             if tv["is_mandatory"]:
-                # Penalty for NOT scheduling mandatory tasks (high penalty)
-                # This will be added only when presence=0
-                objective_terms.append(-tv["score_val"] * tv["presence"].Not())
+                mandatory_penalty = tv["score_val"] * 10000 
+                objective_terms.append(-mandatory_penalty * tv["presence"].Not())
             else:
                 # Reward for scheduling optional tasks
-                presence_score = tv["score_val"] * 100
+                presence_score = tv["score_val"] * 500  # Increased from 100
                 objective_terms.append(presence_score * tv["presence"])
         
         # 4) Early completion bonus
@@ -278,9 +287,14 @@ class TaskScheduler:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 30  # can adjust
         status = solver.Solve(model)
+
+        print(f"Solver status: {solver.StatusName(status)}")
+        print(f"Objective value: {solver.ObjectiveValue() if status in [cp_model.OPTIMAL, cp_model.FEASIBLE] else 'N/A'}")
+        
+        # Initialize scheduled_tasks here
+        scheduled_tasks = []
         
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            scheduled_tasks = []
             base_date = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             
             for task_id, tv in task_vars.items():
@@ -298,6 +312,8 @@ class TaskScheduler:
                         'estimated_duration': tv["duration"],
                         'mandatory': tv["is_mandatory"]
                     })
+            
+            print(f"Scheduled {len(scheduled_tasks)} out of {len(task_vars)} tasks")
             
             # Check if we scheduled all mandatory tasks
             mandatory_tasks = [tv for tv in task_vars.values() if tv["is_mandatory"]]
