@@ -97,20 +97,20 @@ class TestConstraintEnforcement:
         # Check no overlap between tasks
         scheduled_tasks = result["scheduled_tasks"]
         for i in range(len(scheduled_tasks)):
-            task_i_end = datetime.fromisoformat(scheduled_tasks[i]["end"].replace('Z', '+00:00'))
+            task_i_end = datetime.fromisoformat(scheduled_tasks[i]["end"].replace('Z', '+00:00')).replace(tzinfo=None)
             for j in range(i+1, len(scheduled_tasks)):
-                task_j_start = datetime.fromisoformat(scheduled_tasks[j]["start"].replace('Z', '+00:00'))
-                task_j_end = datetime.fromisoformat(scheduled_tasks[j]["end"].replace('Z', '+00:00'))
-                task_i_start = datetime.fromisoformat(scheduled_tasks[i]["start"].replace('Z', '+00:00'))
+                task_j_start = datetime.fromisoformat(scheduled_tasks[j]["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+                task_j_end = datetime.fromisoformat(scheduled_tasks[j]["end"].replace('Z', '+00:00')).replace(tzinfo=None)
+                task_i_start = datetime.fromisoformat(scheduled_tasks[i]["start"].replace('Z', '+00:00')).replace(tzinfo=None)
                 # Either task i ends before task j starts OR task j ends before task i starts
                 assert task_i_end <= task_j_start or task_j_end <= task_i_start
         
         # Check no overlap with events
-        event_start = datetime.fromisoformat(events[0]["start"].replace('Z', '+00:00'))
-        event_end = datetime.fromisoformat(events[0]["end"].replace('Z', '+00:00'))
+        event_start = datetime.fromisoformat(events[0]["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+        event_end = datetime.fromisoformat(events[0]["end"].replace('Z', '+00:00')).replace(tzinfo=None)
         for task in scheduled_tasks:
-            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
-            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00')).replace(tzinfo=None)
             # Either task ends before event starts OR task starts after event ends
             assert task_end <= event_start or task_start >= event_end
 
@@ -145,8 +145,8 @@ class TestConstraintEnforcement:
         work_end_minutes = 16 * 60    # 16:00 in minutes
         
         for task in result["scheduled_tasks"]:
-            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
-            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00')).replace(tzinfo=None)
             
             # Convert to minutes since midnight
             task_start_minutes = task_start.hour * 60 + task_start.minute
@@ -189,10 +189,10 @@ class TestConstraintEnforcement:
         
         # Check each task ends before its due date
         for task in result["scheduled_tasks"]:
-            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00')).replace(tzinfo=None)
             # Find the corresponding input task
             input_task = next(t for t in tasks if t["id"] == task["id"])
-            due_date = datetime.fromisoformat(input_task["due"].replace('Z', '+00:00'))
+            due_date = datetime.fromisoformat(input_task["due"].replace('Z', '+00:00')).replace(tzinfo=None)
             assert task_end <= due_date
 
 # Tests for mandatory vs. optional tasks
@@ -567,8 +567,8 @@ class TestDeploymentScenarios:
         
         # Check work hours weren't affected
         for task in result["scheduled_tasks"]:
-            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
-            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00')).replace(tzinfo=None)
             
             # Times should be within work hours
             task_start_time = task_start.time()
@@ -608,27 +608,28 @@ class TestDeploymentScenarios:
         scheduled_tasks = result["scheduled_tasks"]
         
         for task in scheduled_tasks:
-            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
-            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00')).replace(tzinfo=None)
             
             for event in events:
-                event_start = datetime.fromisoformat(event["start"].replace('Z', '+00:00'))
-                event_end = datetime.fromisoformat(event["end"].replace('Z', '+00:00'))
+                event_start = datetime.fromisoformat(event["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+                event_end = datetime.fromisoformat(event["end"].replace('Z', '+00:00')).replace(tzinfo=None)
                 
                 # Either task ends before event starts OR task starts after event ends
                 assert task_end <= event_start or task_start >= event_end
         
-        # Verify tasks are scheduled within the reduced available time
+        # Verify tasks are scheduled within work hours
         for task in scheduled_tasks:
-            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
-            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00')).replace(tzinfo=None)
             
             # Check task is scheduled during work hours and not during events
-            work_start = datetime.strptime(constraints["work_hours"]["start"], "%H:%M").time()
-            work_end = datetime.strptime(constraints["work_hours"]["end"], "%H:%M").time()
+            work_start_time = datetime.strptime(constraints["work_hours"]["start"], "%H:%M").time()
+            work_end_time = datetime.strptime(constraints["work_hours"]["end"], "%H:%M").time()
             
-            assert task_start.time() >= work_start
-            assert task_end.time() <= work_end
+            # Convert to naive time objects for comparison
+            assert task_start.time() >= work_start_time
+            assert task_end.time() <= work_end_time
 
     def test_very_short_work_hours(self, scheduler, base_date):
         """Test case: Extremely short work hours window."""
@@ -767,12 +768,12 @@ class TestDeploymentScenarios:
         # If tasks were scheduled, check they don't overlap with events
         if result["status"] != "error" and len(result["scheduled_tasks"]) > 0:
             for task in result["scheduled_tasks"]:
-                task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
-                task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+                task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+                task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00')).replace(tzinfo=None)
                 
                 for event in events:
-                    event_start = datetime.fromisoformat(event["start"].replace('Z', '+00:00'))
-                    event_end = datetime.fromisoformat(event["end"].replace('Z', '+00:00'))
+                    event_start = datetime.fromisoformat(event["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+                    event_end = datetime.fromisoformat(event["end"].replace('Z', '+00:00')).replace(tzinfo=None)
                     assert task_end <= event_start or task_start >= event_end
 
     def test_late_day_scheduling(self, scheduler, base_date):
@@ -833,13 +834,13 @@ class TestDeploymentScenarios:
         
         # Check that tasks fit into the fragmented schedule
         for task in result["scheduled_tasks"]:
-            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00'))
-            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00'))
+            task_start = datetime.fromisoformat(task["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+            task_end = datetime.fromisoformat(task["end"].replace('Z', '+00:00')).replace(tzinfo=None)
             
             # Check no overlap with any event
             for event in events:
-                event_start = datetime.fromisoformat(event["start"].replace('Z', '+00:00'))
-                event_end = datetime.fromisoformat(event["end"].replace('Z', '+00:00'))
+                event_start = datetime.fromisoformat(event["start"].replace('Z', '+00:00')).replace(tzinfo=None)
+                event_end = datetime.fromisoformat(event["end"].replace('Z', '+00:00')).replace(tzinfo=None)
                 assert task_end <= event_start or task_start >= event_end
 
     def test_minimal_viable_schedule(self, scheduler, base_date):

@@ -339,16 +339,22 @@ class TaskScheduler:
                     # Create ISO strings using the target date
                     start_dt = base_date + datetime.timedelta(minutes=start_val)
                     end_dt = base_date + datetime.timedelta(minutes=end_val)
-                    
+
+                    # Format with 'Z' for UTC without actually changing the datetime objects
+                    # This ensures the timezone info is in the string without affecting datetime comparisons
+                    start_iso = start_dt.isoformat() + 'Z'
+                    end_iso = end_dt.isoformat() + 'Z'
+
                     scheduled_tasks.append({
                         'id': task_id,
                         'title': tv["title"],
-                        'start': start_dt.isoformat(),
-                        'end': end_dt.isoformat(),
+                        'start': start_iso,
+                        'end': end_iso,
                         'priority': self._value_to_priority(tv["priority_value"]),
                         'estimated_duration': tv["duration"],
                         'mandatory': tv["is_mandatory"]
                     })
+
             
             # Check if we scheduled all mandatory tasks
             mandatory_tasks = [tv for tv in task_vars.values() if tv["is_mandatory"]]
